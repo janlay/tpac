@@ -159,6 +159,9 @@ function ipKey(ip) {
 const ADOPT_TIMEOUT_MS = 2 * 60 * 1000;
 // A reboot or factory reset is finished when the AP completes its next configuration.
 const RESTART_TIMEOUT_MS = 5 * 60 * 1000;
+// A firmware update uploads the image first, so it gets more time.
+const UPGRADE_TIMEOUT_MS = 10 * 60 * 1000;
+const RESTART_NAMES = { reboot: "Reboot", reset: "Factory reset", upgrade: "Firmware update" };
 // How long the card shows that the AP is back, before the line goes away.
 const RESTART_DONE_MS = 15 * 1000;
 // Actions that stay available on a card while its AP restarts.
@@ -200,8 +203,11 @@ class TpacPanel extends HTMLElement {
       // identity -> { since, state }: an adoption in progress ("waiting") or timed out ("timeout").
       adopting: new Map(),
       // identity -> { kind, since, phase }: a reboot or factory reset in progress.
-      // kind is "reboot" or "reset"; phase is "sending", "sent", "joining", "configuring", "done", or "timeout".
+      // kind is "reboot", "reset", or "upgrade"; phase is "sending", "uploading", "sent", "joining",
+      // "configuring", "done", "failed", or "timeout".
       restarting: new Map(),
+      // identity -> { state: "checking" | "done" | "error", result, error }: the last update check.
+      updates: new Map(),
       inFlight: new Set(), // actions whose click is still running; their buttons stay disabled
       pushing: null,
     };
@@ -236,12 +242,16 @@ class TpacPanel extends HTMLElement {
     this._unsubscribe.catch(() => { this._unsubscribe = null; });
   }
 
-  _onTpacEvent({ event, identity }) {
+  _onTpacEvent({ event, identity, title }) {
     const entry = this._ui.restarting.get(identity);
-    if (!entry || !["sent", "joining", "configuring"].includes(entry.phase)) return;
-    const next = { dtls_established: "joining", joined: "configuring", config_complete: "done" }[event];
+    if (!entry || !["sent", "uploading", "joining", "configuring"].includes(entry.phase)) return;
+    const next = {
+      upgrade_started: "uploading", upgrade_resetting: "sent", upgrade_failed: "failed",
+      dtls_established: "joining", joined: "configuring", config_complete: "done",
+    }[event];
     if (!next) return;
-    this._ui.restarting.set(identity, { ...entry, phase: next, at: Date.now() });
+    this._ui.restarting.set(identity, { ...entry, phase: next, at: Date.now(), detail: next === "failed" ? title : entry.detail });
+    if (next === "done" && entry.kind === "upgrade") this._ui.updates.delete(identity);
     this.render();
   }
 
@@ -277,6 +287,8 @@ class TpacPanel extends HTMLElement {
       forget: () => this._confirmCall(
         "Forget this device? Its control channel session will be dropped.",
         "forget", { identity: d.identity }, `forget:${d.identity}`),
+      "check-update": () => this._checkUpdate(d.identity),
+      "install-update": () => this._installUpdate(d.identity, d.package, d.version),
       "manage-toggle": () => this._toggle(this._ui.managing, d.identity),
       "led-toggle": () => this._hass.callService("switch", d.on === "true" ? "turn_on" : "turn_off", { entity_id: d.entity }),
       "country-open": () => this._openCountry(d.identity, d.country),
@@ -365,12 +377,61 @@ class TpacPanel extends HTMLElement {
     this.render();
   }
 
+  /** Asks TPAC whether a newer firmware exists for the AP.  A newer package is downloaded and checked. */
+  async _checkUpdate(identity) {
+    this._ui.updates.set(identity, { state: "checking" });
+    this.render();
+    try {
+      const reply = await this._hass.connection.sendMessagePromise({
+        type: "call_service", domain: "tpac", service: "check_ap_update",
+        service_data: { device: identity }, return_response: true,
+      });
+      this._ui.updates.set(identity, { state: "done", result: reply.response || {} });
+    } catch (err) {
+      this._ui.updates.set(identity, { state: "error", error: err.message || String(err) });
+    }
+    this.render();
+  }
+
+  /** Uploads the checked package to the AP, then shows the progress until the AP runs it. */
+  async _installUpdate(identity, pkg, version) {
+    if (!confirm(`Install firmware ${version} on this AP? The upload takes about a minute, then the AP installs the image and restarts. Its Wi-Fi drops for a few minutes.`)) return;
+    this._ui.restarting.set(identity, { kind: "upgrade", since: Date.now(), phase: "sending" });
+    this.render();
+    try {
+      await this._hass.callService("tpac", "upgrade_ap", { device: identity, package: pkg });
+      const entry = this._ui.restarting.get(identity);
+      if (entry?.phase === "sending") this._ui.restarting.set(identity, { ...entry, phase: "uploading" });
+    } catch (err) {
+      this._ui.restarting.delete(identity);
+      alert(err.message || String(err));
+    }
+    this.render();
+  }
+
+  /** The result line of the last update check, with the install button when the package can be installed. */
+  _updateStatus(identity) {
+    const entry = this._ui.updates.get(identity);
+    if (!entry) return "";
+    if (entry.state === "checking") return `<p class="sub">Checking for updates…</p>`;
+    if (entry.state === "error") return `<p class="sub warn">Update check failed: ${this.escape(entry.error)}</p>`;
+    const r = entry.result;
+    if (!r.update_available) return `<p class="sub">Up to date (${this.escape(r.current || "unknown")}).</p>`;
+    const head = `Firmware ${this.escape(r.latest)} is available (current ${this.escape(r.current)}).`;
+    if (!r.installable) return `<p class="sub warn">${head} It cannot be installed: ${this.escape(r.reason || "unknown reason")}.</p>`;
+    return `<div class="row spread"><span class="sub">${head} Signature checked.</span>
+      <button class="btn btn-primary" data-action="install-update" data-identity="${this.escape(identity)}" data-package="${this.escape(r.package)}" data-version="${this.escape(r.latest)}">Install update</button></div>`;
+  }
+
   /** The restart progress of one access point, or null.  While it is active, the card is locked. */
   _restartProgress(identity) {
     const entry = this._ui.restarting.get(identity);
     if (!entry) return null;
-    const what = entry.kind === "reset" ? "Factory reset" : "Reboot";
+    const what = RESTART_NAMES[entry.kind];
     const now = Date.now();
+    if (entry.phase === "failed") {
+      return { active: false, state: "timeout", text: entry.detail || `${what} failed.` };
+    }
     if (entry.phase === "done") {
       if (now - entry.at > RESTART_DONE_MS) {
         this._ui.restarting.delete(identity);
@@ -378,15 +439,17 @@ class TpacPanel extends HTMLElement {
       }
       return { active: false, state: "done", text: `${what} done. The AP is back and configured.` };
     }
-    if (entry.phase === "timeout" || now - entry.since > RESTART_TIMEOUT_MS) {
+    const limit = entry.kind === "upgrade" ? UPGRADE_TIMEOUT_MS : RESTART_TIMEOUT_MS;
+    if (entry.phase === "timeout" || now - entry.since > limit) {
       this._ui.restarting.set(identity, { ...entry, phase: "timeout" });
-      return { active: false, state: "timeout", text: `${what}: the AP did not come back within 5 minutes. Check its power and cable.` };
+      return { active: false, state: "timeout", text: `${what}: the AP did not come back within ${limit / 60000} minutes. Check its power and cable.` };
     }
     const seconds = Math.floor((now - entry.since) / 1000);
     const elapsed = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
     const text = {
       sending: `${what}: sending the request…`,
-      sent: `${what} sent. The AP is restarting…`,
+      uploading: `${what}: uploading the image to the AP…`,
+      sent: entry.kind === "upgrade" ? `${what}: image sent. The AP installs it and restarts…` : `${what} sent. The AP is restarting…`,
       joining: `${what}: the AP is back and joins TPAC…`,
       configuring: `${what}: sending the configuration…`,
     }[entry.phase];
@@ -879,10 +942,12 @@ class TpacPanel extends HTMLElement {
         <div class="row">
           <button class="btn btn-text" data-action="reboot" data-identity="${this.escape(identity)}">Reboot</button>
           <button class="btn btn-text btn-warn" data-action="factory-reset" data-identity="${this.escape(identity)}">Factory reset</button>
+          <button class="btn btn-text" data-action="check-update" data-identity="${this.escape(identity)}" ${this._ui.updates.get(identity)?.state === "checking" ? "disabled" : ""}>Check updates</button>
           <button class="btn btn-text" data-action="country-open" data-identity="${this.escape(identity)}" data-country="${this.escape(a.country || "")}">${a.country ? `Country ${this.escape(a.country)}` : "Set country"}</button>
         </div>
         <button class="btn btn-text btn-danger" data-action="forget" data-identity="${this.escape(identity)}" ${busyForget ? "disabled" : ""}>${busyForget ? "Forgetting…" : "Forget"}</button>
       </div>
+      ${this._updateStatus(identity)}
     </div>`;
   }
 
@@ -1376,6 +1441,7 @@ class TpacPanel extends HTMLElement {
       .btn:disabled { opacity: 0.5; cursor: default; }
       .card.device[data-locked] .device-actions { opacity: 0.6; }
       .restart-progress { margin: 0; padding: 8px 10px; border-radius: 8px; font-size: 13px; background: var(--secondary-background-color); color: var(--primary-text-color); }
+      .sub.warn { color: var(--error-color, #db4437); }
       .restart-busy { border-left: 3px solid var(--warning-color, #ffa600); }
       .restart-done { border-left: 3px solid var(--success-color, #43a047); }
       .restart-timeout { border-left: 3px solid var(--error-color, #db4437); }

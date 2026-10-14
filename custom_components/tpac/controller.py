@@ -129,6 +129,7 @@ class Controller:
         self._led_desired: dict[str, bool] = {}
         self._led_written: dict[str, float] = {}
         self._joining: set[str] = set()
+        self._upgrades: dict[str, dict] = {}
         self._events: deque[dict] = deque(maxlen=500)
         self._event_seq = 0
         self._load_state()
@@ -536,6 +537,14 @@ class Controller:
     def _session_event(self, identity: str, event: str, title: str, data: dict | None = None) -> None:
         self.record(identity, event, title, data)
         with self._lock:
+            upgrade = self._upgrades.get(identity)
+            if upgrade is not None:
+                if event == "upgrade_resetting":
+                    upgrade["phase"] = "installing"
+                elif event == "upgrade_failed":
+                    upgrade.update(phase="failed", error=title)
+                elif event == "joined" and upgrade["phase"] == "installing":
+                    upgrade["phase"] = "done"
             if event == "joined":
                 self._joining.add(identity)
                 return
@@ -579,9 +588,19 @@ class Controller:
             upload = upgrade.Upload(image, record, identifier, next_txid=lambda: next(txids))
             if session is None or not session.start_upload(upload):
                 return False
+            self._upgrades[identity] = {"upload": upload, "phase": "uploading", "error": ""}
         LOG.info("firmware upload requested for %s", identity)
         self.record(identity, "upgrade_requested", "Firmware upload requested")
         return True
+
+    def upgrade_status(self, identity: str) -> dict | None:
+        with self._lock:
+            upgrade = self._upgrades.get(identity)
+            if upgrade is None:
+                return None
+            upload = upgrade["upload"]
+            percent = len(upload.acked) * 100 // upload.blocks if upload.blocks else 0
+            return {"phase": upgrade["phase"], "percent": percent, "error": upgrade["error"]}
 
     def record(self, identity: str, event: str, title: str, data: dict | None = None, at: float | None = None) -> None:
         with self._lock:

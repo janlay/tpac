@@ -24,7 +24,7 @@ PAD = 0xFF
 VENDOR_ID = bytes.fromhex("12345678")
 RESET_VENDOR_VALUE = bytes.fromhex("12345678002300230004" "00000001")
 
-WINDOW = 16
+WINDOW = 1
 RETRY_AFTER = 1.0
 MAX_TRIES = 5
 
@@ -77,6 +77,16 @@ def reset_request(txid: int, record: bytes) -> bytes:
     )
 
 
+def _response_codes(message: bytes) -> tuple[int, int]:
+    code = vendor = 0
+    for etype, value in cc.elements(message):
+        if etype == ELEMENT_RESULT_CODE and len(value) >= 4:
+            code = int.from_bytes(value[:4], "big")
+        elif etype == ELEMENT_VENDOR and len(value) >= 14 and value[:4] == VENDOR_ID:
+            vendor = int.from_bytes(value[10:14], "big")
+    return code, vendor
+
+
 @dataclass
 class _Slot:
     block: int
@@ -98,6 +108,8 @@ class Upload:
     acked: set[int] = field(default_factory=set)
     inflight: dict[int, _Slot] = field(default_factory=dict)
     error: str = ""
+    reset_txid: int | None = None
+    retries: int = 0
 
     @property
     def blocks(self) -> int:
@@ -120,6 +132,12 @@ class Upload:
             self.state = "data"
             return [image_data_response(txid, self.identifier)] + self._fill()
         if self.state == "data" and mtype == IMAGE_DATA_RESPONSE:
+            code, vendor = _response_codes(message)
+            slot = self.inflight.get(txid)
+            if slot is not None and (code or vendor):
+                self.state = "failed"
+                self.error = f"the AP rejected block {slot.block}: result {code}, vendor value {vendor}"
+                return []
             return self._acked(txid)
         return []
 
@@ -136,6 +154,7 @@ class Upload:
                 self.error = f"block {slot.block} not acknowledged after {MAX_TRIES} tries"
                 return []
             slot.tries += 1
+            self.retries += 1
             slot.sent_at = now
             out.append(self._block_message(txid, slot.block))
         return out
@@ -163,5 +182,6 @@ class Upload:
         self.acked.add(slot.block)
         if len(self.acked) == self.blocks:
             self.state = "resetting"
-            return [reset_request(self.next_txid(), self.record)]
+            self.reset_txid = self.next_txid()
+            return [reset_request(self.reset_txid, self.record)]
         return self._fill()

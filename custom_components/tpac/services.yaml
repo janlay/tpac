@@ -31,8 +31,8 @@ upgrade_ap:
         text:
     identifier:
       name: Image identifier
-      description: 40 hex characters.
-      required: true
+      description: 40 hex characters. Leave empty for a package whose identifier TPAC knows.
+      required: false
       selector:
         text:
 adopt:

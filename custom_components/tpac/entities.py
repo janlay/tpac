@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -103,3 +105,29 @@ class NetworkEndpoint(NetworkEntity):
 def is_access_point(device: dict) -> bool:
     """An access point that the controller discovered over CAPWAP."""
     return device.get("protocol") == "capwap"
+
+
+def access_point_data(coordinator, identity: str) -> dict:
+    """The coordinator's data of one access point, or an empty dict while it is not served."""
+    return next(
+        (item for item in coordinator.data.get("devices", []) if device_identity(item) == identity),
+        {},
+    )
+
+
+def add_access_point_entities(coordinator, entry, async_add_entities, create: Callable[[str], object]) -> None:
+    """Add one entity per access point the controller serves, now and when it appears.  create(identity) builds it."""
+    added: set[str] = set()
+
+    def add_new() -> None:
+        fresh = []
+        for device in coordinator.data.get("devices", []):
+            identity = device_identity(device)
+            if identity and is_access_point(device) and identity not in added:
+                added.add(identity)
+                fresh.append(create(identity))
+        if fresh:
+            async_add_entities(fresh)
+
+    add_new()
+    entry.async_on_unload(coordinator.async_add_listener(add_new))

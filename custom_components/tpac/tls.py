@@ -57,6 +57,7 @@ class DtlsSession:
         self._factory_reset: tuple[int | None, int] | None = None
         self._upload: upgrade.Upload | None = None
         self._upload_start = False
+        self._upgrade_reset_txid: int | None = None
         self._send_back = send_back
         self._server = DtlsServer(certificate.read_bytes(), key.read_bytes(), remote)
         self._local_ip = local_ip
@@ -144,12 +145,20 @@ class DtlsSession:
     def _answer_control(self, message: bytes) -> None:
         mtype = capwap_control.message_type(message)
         name = capwap_control.MESSAGE_NAMES.get(mtype, f"type {mtype}")
+        if mtype == capwap_control.RESET_RESPONSE and capwap_control.transaction_id(message) == self._upgrade_reset_txid:
+            self._upgrade_reset_txid = None
+            code = next((int.from_bytes(v[:4], "big") for t, v in capwap_control.elements(message) if t == 33 and len(v) >= 4), None)
+            reason = capwap_control.RESULT_CODES.get(code, "no result code") if code is not None else "no result code"
+            self._on_event("upgrade_reset_answered", f"Reset response: {reason}", {"result_code": code})
+            return
         if self._upload is not None and mtype in (upgrade.CONFIG_UPDATE_RESPONSE, upgrade.IMAGE_DATA_REQUEST, upgrade.IMAGE_DATA_RESPONSE):
             upload = self._upload
             for out in upload.on_message(message):
                 self._send_control(out)
             if upload.state == "resetting":
-                self._on_event("upgrade_resetting", "Image sent; reset requested so the AP installs it")
+                self._upgrade_reset_txid = upload.reset_txid
+                self._on_event("upgrade_resetting", f"Image sent with {upload.retries} retransmissions; reset requested so the AP installs it",
+                               {"blocks": upload.blocks, "retries": upload.retries})
                 self._upload = None
             elif upload.state == "failed":
                 self._on_event("upgrade_failed", f"Firmware upload failed: {upload.error}")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import threading
+import time
 from pathlib import Path
 
 import voluptuous as vol
@@ -26,11 +27,12 @@ from .config_flow import async_start_discovery
 from .logbook import async_fire_tpac_event
 from .entities import device_identity
 from .firmware import (
-    download_package, find_latest, image_version_record, package_path, parse_version, read_image,
-    remove_old_packages, store_package, verify_image,
+    download_package, find_latest, image_identifier, image_version_record, package_path, parse_version,
+    read_image, remove_old_packages, store_package, verify_image,
 )
 
-PLATFORMS = ["number", "sensor", "switch", "text"]
+PLATFORMS = ["number", "sensor", "switch", "text", "update"]
+LATEST_TTL = 6 * 3600
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -124,14 +126,14 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     )
 
     async def upgrade_ap(call: ServiceCall) -> None:
-        await _async_upgrade_ap(hass, call.data["device"], call.data["package"], call.data["identifier"])
+        await async_upgrade_ap(hass, call.data["device"], call.data["package"], call.data.get("identifier", ""))
 
     hass.services.async_register(
         DOMAIN, "upgrade_ap", upgrade_ap,
         schema=vol.Schema({
             vol.Required("device"): cv.string,
             vol.Required("package"): cv.string,
-            vol.Required("identifier"): vol.All(cv.string, vol.Match(r"^[0-9a-fA-F]{40}$")),
+            vol.Optional("identifier"): vol.All(cv.string, vol.Match(r"^[0-9a-fA-F]{40}$")),
         }),
     )
     return True
@@ -168,7 +170,7 @@ def _controller(hass: HomeAssistant) -> Controller:
     return coordinator.controller
 
 
-async def _async_upgrade_ap(hass: HomeAssistant, identity: str, package: str, identifier: str) -> None:
+async def async_upgrade_ap(hass: HomeAssistant, identity: str, package: str, identifier: str) -> None:
     """Upload a verified package to an adopted AP.  The AP installs it and reboots."""
     path = Path(hass.config.path(DOMAIN, "firmware")) / package
     if not path.is_file():
@@ -176,8 +178,11 @@ async def _async_upgrade_ap(hass: HomeAssistant, identity: str, package: str, id
     image, record, reason = await hass.async_add_executor_job(_prepare_image, path)
     if reason:
         raise ServiceValidationError(reason)
+    key = bytes.fromhex(identifier) if identifier else image_identifier(image)
+    if key is None:
+        raise ServiceValidationError("the image identifier of this package is not known; pass it as identifier")
     coordinator = next(iter(hass.data[DOMAIN].values()))
-    if not coordinator.controller.upgrade(identity.lower(), image, record, bytes.fromhex(identifier)):
+    if not await hass.async_add_executor_job(coordinator.controller.upgrade, identity.lower(), image, record, key):
         raise ServiceValidationError("the access point is not adopted or not connected")
 
 
@@ -185,6 +190,28 @@ def _prepare_image(path: Path) -> tuple[bytes, bytes, str]:
     image = read_image(path)
     reason = verify_image(image)
     return image, image_version_record(path), (f"signature check failed: {reason}" if reason else "")
+
+
+async def async_latest_package(hass: HomeAssistant, model: str, hardware: str, force: bool = False):
+    """The newest package for a model and hardware version.  Cached, so APs of one model share a lookup."""
+    cache = hass.data.setdefault(f"{DOMAIN}_latest", {})
+    hit = cache.get((model, hardware))
+    if hit is not None and not force and time.monotonic() - hit[1] < LATEST_TTL:
+        return hit[0]
+    latest = await find_latest(async_get_clientsession(hass), model, hardware)
+    cache[(model, hardware)] = (latest, time.monotonic())
+    return latest
+
+
+async def async_fetch_package(hass: HomeAssistant, latest) -> Path:
+    """Download a package to the staging directory once, and return its path."""
+    directory = Path(hass.config.path(DOMAIN, "firmware"))
+    await hass.async_add_executor_job(remove_old_packages, directory)
+    path = package_path(directory, latest.url)
+    if not path.exists():
+        data = await download_package(async_get_clientsession(hass), latest.url)
+        path = await hass.async_add_executor_job(store_package, directory, latest.url, data)
+    return path
 
 
 async def _async_check_ap_update(hass: HomeAssistant, identity: str) -> dict:
@@ -201,23 +228,19 @@ async def _async_check_ap_update(hass: HomeAssistant, identity: str) -> dict:
     if not model or not hardware or current is None:
         raise ServiceValidationError("the access point did not report its model, hardware or software version")
 
-    directory = Path(hass.config.path(DOMAIN, "firmware"))
-    await hass.async_add_executor_job(remove_old_packages, directory)
-    session = async_get_clientsession(hass)
     result = {"model": model, "hardware": hardware, "current": firmware, "latest": None, "update_available": False}
-    latest = await find_latest(session, model, hardware)
+    latest = await async_latest_package(hass, model, hardware, force=True)
     if latest is None or latest.version <= current:
         return result
 
-    path = package_path(directory, latest.url)
-    if not path.exists():
-        data = await download_package(session, latest.url)
-        path = await hass.async_add_executor_job(store_package, directory, latest.url, data)
+    path = await async_fetch_package(hass, latest)
     image = await hass.async_add_executor_job(read_image, path)
     reason = await hass.async_add_executor_job(verify_image, image)
+    known = image_identifier(image) is not None
     result.update(
         latest=".".join(map(str, latest.version)), update_available=True,
-        package=path.name, verified=not reason, reason=reason,
+        package=path.name, verified=not reason, reason=reason or ("" if known else "the image identifier is not known"),
+        installable=not reason and known,
     )
     return result
 

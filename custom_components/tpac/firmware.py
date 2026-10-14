@@ -182,3 +182,14 @@ def verify_image(image: bytes) -> str:
     if block[pad + 1:] != PREFIX_SHA1 + hashlib.sha1(digest).digest():
         return "digest mismatch"
     return ""
+
+
+KNOWN_IDENTIFIERS = {
+    "d0db894f5fffa333d6bedfb0391489ca5c6a49e25dc33887a10363fd985fec77": "00c9fc004d755b87e52dff99f374f2b84a73984c",
+    "1da564e60eb3402a3e9cd5f67515c7de00890448a5373dc77fae9302e49ec92a": "01ca0400d846e739bd36ba8b021f2c662e0f502f",
+}
+
+
+def image_identifier(image: bytes) -> bytes | None:
+    value = KNOWN_IDENTIFIERS.get(hashlib.sha256(image).hexdigest())
+    return bytes.fromhex(value) if value else None
