@@ -1,0 +1,60 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "TPAC",
+        "description": "Observe LLDP neighbours on this interface.",
+        "data": {
+          "interface": "Interface"
+        }
+      },
+      "adopt": {
+        "title": "Adopt access point",
+        "description": "Adopt {name} ({identity}) at {address} as an access point controlled by TPAC?"
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "TPAC is already configured.",
+      "adopted": "The access point is adopted. It joins within about a minute.",
+      "not_discovered": "The access point is no longer waiting for adoption.",
+      "not_running": "TPAC is not running."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Client disconnect grace period",
+        "description": "Current: {current}. Choose a client and set its grace period in seconds. 0 follows the device-wide period.",
+        "data": {
+          "client": "Client",
+          "seconds": "Grace period (s)"
+        }
+      }
+    },
+    "abort": {
+      "no_clients": "No Wi-Fi client is known yet."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "packets": {
+        "name": "Frames received"
+      },
+      "sources": {
+        "name": "Observed neighbour addresses"
+      },
+      "ap_status": {
+        "state": {
+          "online": "Online",
+          "offline": "Offline"
+        }
+      },
+      "client_status": {
+        "state": {
+          "connected": "Connected",
+          "disconnected": "Disconnected"
+        }
+      }
+    }
+  }
+}

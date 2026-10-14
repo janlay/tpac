@@ -1,0 +1,126 @@
+check_ap_update:
+  name: Check access point update
+  description: >-
+    Compare the software of an access point with the upgrade packages on the TP-LINK resource centre.
+    A newer package is downloaded to the Home Assistant configuration directory and its signature is checked.
+  fields:
+    device:
+      name: Device
+      description: Base MAC address (or serial number) of the access point, as shown by the TPAC integration.
+      required: true
+      example: "80:ae:54:81:86:60"
+      selector:
+        text:
+upgrade_ap:
+  name: Upgrade access point
+  description: >-
+    Upload a verified firmware package to an adopted access point. The access point installs the image and reboots.
+    The identifier is the 20-byte image identifier (element 26) as 40 hex characters.
+  fields:
+    device:
+      name: Device
+      description: Base MAC address of the access point.
+      required: true
+      selector:
+        text:
+    package:
+      name: Package
+      description: Zip file name in the firmware staging directory.
+      required: true
+      selector:
+        text:
+    identifier:
+      name: Image identifier
+      description: 40 hex characters.
+      required: true
+      selector:
+        text:
+adopt:
+  name: Adopt access point
+  description: >-
+    Take control of a discovered access point. TPAC answers its Discovery Requests only after this service runs.
+  fields:
+    identity:
+      name: Identity
+      description: Base MAC address of the access point.
+      required: true
+      selector:
+        text:
+forget:
+  name: Forget access point
+  description: >-
+    Withdraw TPAC control of an adopted access point. TPAC stops answering its Discovery Requests.
+  fields:
+    identity:
+      name: Device
+      description: Base MAC address of the access point.
+      required: true
+      selector:
+        text:
+import_profiles:
+  name: Import profiles
+  description: >-
+    Import a TPAC profile file (format tpac-profiles, version 1). A profile with the same name is replaced.
+    Passwords are in the file in clear text.
+  fields:
+    data:
+      name: Data
+      description: The parsed JSON content of the profile file.
+      required: true
+      selector:
+        object:
+export_profiles:
+  name: Export profiles
+  description: Return all Wi-Fi profiles as a tpac-profiles file. Passwords are in clear text.
+reboot:
+  name: Reboot access point
+  description: Ask an adopted, connected access point to reboot. It joins TPAC again by itself.
+  fields:
+    identity:
+      name: Identity
+      description: Base MAC address of the access point.
+      required: true
+      selector:
+        text:
+factory_reset:
+  name: Factory reset access point
+  description: Reset an adopted, connected access point to manufacturing defaults. It must be adopted again.
+  fields:
+    identity:
+      name: Identity
+      description: Base MAC address of the access point.
+      required: true
+      selector:
+        text:
+assign_profiles:
+  name: Assign profiles
+  description: Push the merged Wi-Fi networks of the named profiles to an access point. "default" is always included.
+  fields:
+    identity:
+      name: Identity
+      description: Base MAC address of the access point.
+      required: true
+      selector:
+        text:
+    names:
+      name: Profiles
+      description: Profile names to apply.
+      required: true
+      selector:
+        object:
+set_country:
+  name: Set country
+  description: Set the country code of an access point and re-apply its profiles.
+  fields:
+    identity:
+      name: Identity
+      description: Base MAC address of the access point.
+      required: true
+      selector:
+        text:
+    country:
+      name: Country
+      description: Country code, for example CN.
+      required: true
+      selector:
+        text:

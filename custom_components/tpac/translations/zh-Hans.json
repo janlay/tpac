@@ -1,0 +1,60 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "TPAC",
+        "description": "Observe LLDP neighbours on this interface.",
+        "data": {
+          "interface": "Interface"
+        }
+      },
+      "adopt": {
+        "title": "收养接入点",
+        "description": "是否将 {address} 上的 {name}（{identity}）收养为由 TPAC 控制的接入点？"
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "TPAC is already configured.",
+      "adopted": "接入点已收养，约一分钟内入网。",
+      "not_discovered": "该接入点已不再等待收养。",
+      "not_running": "TPAC 未运行。"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "客户端断开宽限时间",
+        "description": "当前：{current}。选择一个客户端并设置其宽限时间（秒）。0 表示沿用设备级设置。",
+        "data": {
+          "client": "客户端",
+          "seconds": "宽限时间（秒）"
+        }
+      }
+    },
+    "abort": {
+      "no_clients": "尚未发现任何 Wi-Fi 客户端。"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "packets": {
+        "name": "收到的 LLDP 帧"
+      },
+      "sources": {
+        "name": "观察到的邻居地址"
+      },
+      "ap_status": {
+        "state": {
+          "online": "在线",
+          "offline": "离线"
+        }
+      },
+      "client_status": {
+        "state": {
+          "connected": "已连接",
+          "disconnected": "未连接"
+        }
+      }
+    }
+  }
+}
